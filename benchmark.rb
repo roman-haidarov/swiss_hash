@@ -4,8 +4,9 @@
 require_relative 'lib/swiss_hash'
 
 SIZES       = [1_000, 10_000, 100_000]
-ITERATIONS  = 21
-WARMUP      = 5
+ITERATIONS  = Integer(ENV.fetch('ITERATIONS', '21'))
+WARMUP      = Integer(ENV.fetch('WARMUP', '5'))
+RUNS        = Integer(ENV.fetch('RUNS', '10'))
 LOOKUP_MULT = 3
 
 def median(a)
@@ -28,6 +29,10 @@ def iqr_mean(a)
   mid.empty? ? median(a) : mid.sum / mid.length.to_f
 end
 
+def mean(a)
+  a.sum / a.length.to_f
+end
+
 def fmt_ms(sec)
   "%.3f" % (sec * 1000)
 end
@@ -47,11 +52,12 @@ def timed_once(&block)
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   block.call
   t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  GC.enable
   t1 - t0
+ensure
+  GC.enable
 end
 
-def run_pair(iterations, warmup, ruby_block, swiss_block)
+def run_pair_once(iterations, warmup, ruby_block, swiss_block)
   warmup.times { ruby_block.call }
   warmup.times { swiss_block.call }
 
@@ -71,11 +77,26 @@ def run_pair(iterations, warmup, ruby_block, swiss_block)
   [ruby_times, swiss_times]
 end
 
-def report(label, ruby_times, swiss_times)
-  rm  = iqr_mean(ruby_times)
-  sm  = iqr_mean(swiss_times)
-  r_std = stddev(ruby_times) / (ruby_times.sum / ruby_times.length.to_f) * 100
-  s_std = stddev(swiss_times) / (swiss_times.sum / swiss_times.length.to_f) * 100
+def run_pair(iterations, warmup, ruby_block, swiss_block, runs: RUNS)
+  raise "RUNS must be >= 1" if runs < 1
+
+  ruby_runs = []
+  swiss_runs = []
+
+  runs.times do
+    ruby_times, swiss_times = run_pair_once(iterations, warmup, ruby_block, swiss_block)
+    ruby_runs  << iqr_mean(ruby_times)
+    swiss_runs << iqr_mean(swiss_times)
+  end
+
+  [ruby_runs, swiss_runs]
+end
+
+def report(label, ruby_runs, swiss_runs)
+  rm  = mean(ruby_runs)
+  sm  = mean(swiss_runs)
+  r_std = rm.zero? ? 0.0 : stddev(ruby_runs) / rm * 100
+  s_std = sm.zero? ? 0.0 : stddev(swiss_runs) / sm * 100
 
   printf "  %-38s  Ruby %6s ms (±%4.1f%%)   Swiss %6s ms (±%4.1f%%)   %s\n",
          label, fmt_ms(rm), r_std, fmt_ms(sm), s_std, fmt_pct(sm, rm)
@@ -211,7 +232,7 @@ end
 
 puts "SwissHash Benchmark — honest edition"
 puts "Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM}"
-puts "#{ITERATIONS} iterations (IQR-filtered mean), #{WARMUP} warmup, interleaved Ruby/Swiss"
+puts "#{RUNS} runs × #{ITERATIONS} iterations (IQR-filtered mean per run), #{WARMUP} warmup/run, interleaved Ruby/Swiss"
 puts "=" * 100
 puts ""
 

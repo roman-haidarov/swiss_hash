@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Ruby ${{ matrix.ruby }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ruby: ['3.0', '3.1', '3.2', '3.3']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Show toolchain versions
+        run: |
+          ruby -v
+          bundle -v
+          cc --version || clang --version
+
+      - name: Compile native extension
+        run: bundle exec rake compile
+
+      - name: Run regression tests
+        run: |
+          bundle exec ruby test/string_key_mutation_test.rb
+          bundle exec ruby test/hash_api_test.rb
+
+      - name: Run require smoke test
+        run: |
+          bundle exec ruby -Ilib -e 'require "swiss_hash"; h = SwissHash::Hash.new; h[:a] = 1; h[String.new("b")] = 2; raise "lookup failed" unless h[:a] == 1 && h["b"] == 2 && h.to_h == { a: 1, "b" => 2 }'
+
+      - name: Build gem package
+        run: gem build swiss_hash.gemspec

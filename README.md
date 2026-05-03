@@ -1,10 +1,10 @@
 # SwissHash
 
-Swiss Table hash map implementation as a Ruby C extension. Based on the design principles from Google's [Abseil](https://abseil.io/about/design/swisstables) flat_hash_map, Rust's [hashbrown](https://github.com/rust-lang/hashbrown), and [Go 1.24 Swiss Tables](https://go.dev/blog/swisstable), with architecture adapted for Ruby's object system.
+Swiss Table hash map implementation as a Ruby C extension. The design follows the same broad family as Google's [Abseil](https://abseil.io/about/design/swisstables) `flat_hash_map`, Rust's [hashbrown](https://github.com/rust-lang/hashbrown), and [Go 1.24 Swiss Tables](https://go.dev/blog/swisstable), with Ruby-specific hashing, key preparation, GC integration, and a Hash-like API surface.
 
 ## Installation
 
-```
+```bash
 gem install swiss_hash
 ```
 
@@ -15,72 +15,85 @@ require "swiss_hash"
 
 h = SwissHash::Hash.new
 h["key"] = "value"
-h["key"] # => "value"
-h.delete("key")
-h.stats # => { capacity: 16, size: 0, ... }
+h["key"]          # => "value"
+h.fetch("key")    # => "value"
+h.delete("key")   # => "value"
+h.stats            # => { capacity: 16, size: 0, ... }
 ```
+
+`SwissHash::Hash` is intentionally not a subclass of Ruby's built-in `Hash`. Use `to_h` when you need a real Ruby `Hash`, and `to_sh` when you want a shallow SwissHash copy.
 
 ## Performance Results
 
-Benchmarks on Ruby 3.1.7 / arm64-darwin24 (Apple Silicon, NEON SIMD).
+Benchmarks below were produced by `benchmark.rb` on Ruby 3.4.3 / arm64-darwin24.
 
-Methodology: 21 iterations per test, 5 warmup runs, IQR-filtered mean, **interleaved Ruby/SwissHash measurements** per iteration with alternating start order to cancel out thermal drift and scheduling noise. Per-side coefficient of variation reported to distinguish real deltas from noise.
+Methodology: 10 runs × 21 measured iterations, 5 warmup iterations per run, IQR-filtered mean per run, interleaved Ruby/SwissHash measurements with alternating start order, and per-side coefficient of variation (`±X.X%`) reported to make noise visible.
 
 ### N = 100,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
-|---|---|---|---|
-| Insert (string keys) | 17.6 ms | 11.3 ms | **−35.8%** ⚡ |
-| Delete + reinsert 25% | 9.8 ms | 8.9 ms | **−9.0%** |
-| Insert (sequential int) | 7.0 ms | 6.4 ms | **−8.7%** |
-| Mixed (70% read / 20% write / 10% delete) | 21.4 ms | 19.6 ms | **−8.6%** |
-| Insert (random int) | 6.7 ms | 6.4 ms | **−3.5%** |
-| Lookup (string keys) | 20.3 ms | 20.8 ms | +2.5% |
-| Lookup (sequential int) | 11.7 ms | 12.2 ms | +4.4% |
+|---|---:|---:|---:|
+| Insert (sequential int) | 6.324 ms (±0.5%) | 5.023 ms (±0.6%) | **−20.57%** ⚡ |
+| Insert (string keys) | 16.485 ms (±4.6%) | 10.386 ms (±3.0%) | **−37.00%** ⚡ |
+| Insert (random int) | 5.963 ms (±1.2%) | 5.010 ms (±1.0%) | **−15.98%** ⚡ |
+| Lookup (sequential int, 3x) | 13.281 ms (±0.1%) | 11.116 ms (±0.1%) | **−16.31%** ⚡ |
+| Lookup (string keys, 3x) | 20.561 ms (±3.8%) | 21.535 ms (±4.9%) | +4.74% |
+| Delete + reinsert 25% | 8.965 ms (±0.7%) | 7.164 ms (±0.8%) | **−20.09%** ⚡ |
+| Mixed (70% read / 20% write / 10% delete) | 21.784 ms (±0.2%) | 18.990 ms (±0.3%) | **−12.83%** ⚡ |
 
 ### N = 10,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
-|---|---|---|---|
-| Insert (string keys) | 1.63 ms | 1.10 ms | **−32.8%** ⚡ |
-| **Lookup (string keys)** | 1.71 ms | 1.62 ms | **−5.2%** ⚡ |
-| Mixed | 1.93 ms | 1.90 ms | −1.6% |
-| Delete + reinsert | 0.91 ms | 0.89 ms | −2.0% |
-| Insert (sequential int) | 0.66 ms | 0.67 ms | +2.5% |
-| Lookup (sequential int) | 1.05 ms | 1.12 ms | +6.0% |
+|---|---:|---:|---:|
+| Insert (sequential int) | 0.578 ms (±1.1%) | 0.510 ms (±1.1%) | **−11.82%** ⚡ |
+| Insert (string keys) | 1.522 ms (±3.5%) | 0.992 ms (±1.6%) | **−34.80%** ⚡ |
+| Insert (random int) | 0.554 ms (±2.0%) | 0.501 ms (±2.5%) | **−9.53%** ⚡ |
+| Lookup (sequential int, 3x) | 1.071 ms (±0.3%) | 1.065 ms (±0.1%) | −0.55% |
+| Lookup (string keys, 3x) | 1.710 ms (±1.3%) | 1.563 ms (±1.4%) | **−8.58%** ⚡ |
+| Delete + reinsert 25% | 0.814 ms (±1.6%) | 0.714 ms (±1.2%) | **−12.29%** ⚡ |
+| Mixed (70% read / 20% write / 10% delete) | 1.988 ms (±0.4%) | 1.869 ms (±0.5%) | **−5.98%** ⚡ |
 
 ### N = 1,000
 
-Ruby Hash uses an AR-table (flat array, linear search) for small hashes — SwissHash doesn't have this small-map regime, so for very small integer-keyed workloads Ruby wins. String workloads still favour SwissHash due to wyhash and the lookup fast path.
+Ruby Hash uses an AR-table for small hashes, so very small integer-keyed workloads can still favour the built-in implementation. String-heavy workloads continue to be the strongest SwissHash case.
 
 | Operation | Ruby Hash | SwissHash | Delta |
-|---|---|---|---|
-| Insert (string keys) | 0.183 ms | 0.118 ms | **−35.6%** ⚡ |
-| **Lookup (string keys)** | 0.184 ms | 0.155 ms | **−15.5%** ⚡ |
-| Insert (sequential int) | 0.063 ms | 0.074 ms | +17.5% |
-| Delete + reinsert | 0.094 ms | 0.102 ms | +8.2% |
+|---|---:|---:|---:|
+| Insert (sequential int) | 0.056 ms (±0.7%) | 0.057 ms (±0.9%) | +1.88% |
+| Insert (string keys) | 0.156 ms (±2.5%) | 0.102 ms (±0.9%) | **−34.78%** ⚡ |
+| Insert (random int) | 0.054 ms (±3.5%) | 0.051 ms (±3.4%) | −6.54% |
+| Lookup (sequential int, 3x) | 0.111 ms (±0.4%) | 0.111 ms (±0.2%) | +0.29% |
+| Lookup (string keys, 3x) | 0.181 ms (±0.3%) | 0.150 ms (±0.4%) | **−17.10%** ⚡ |
+| Delete + reinsert 25% | 0.082 ms (±0.9%) | 0.079 ms (±0.5%) | −4.12% |
+| Mixed (70% read / 20% write / 10% delete) | 0.202 ms (±0.3%) | 0.197 ms (±0.2%) | −2.04% |
 
 ### Summary
 
-- **Faster on 5 of 7 operations** at N=100k, some substantially (−36% string insert, −9% mixed workload, −9% delete+reinsert).
-- **Strictly faster for string keys** at every size (25–35% faster inserts, break-even to 15% faster lookups).
-- **Near parity on lookups** at N=100k (+2.5% on strings, +4.4% on ints) — remaining gap stems from Ruby VM's opcode specialization for `Hash#[]`, not the data structure.
+- SwissHash is faster on **6 of 7 operations** at N=100k in the current benchmark run.
+- The strongest win is still string-key insertion: **−34% to −37%** across tested sizes.
+- Large integer-keyed inserts, delete/reinsert churn, and mixed workloads improved substantially after moving more Hash-like operations into C and keeping the hot paths lean.
+- String lookups are workload-sensitive: SwissHash wins at N=1k and N=10k, while the N=100k run is slightly slower than Ruby Hash within a noisier test band.
+- Ruby's built-in `Hash` remains excellent, especially for very small maps and cases that benefit from VM-level Hash specialization.
 
 ### Memory Usage
 
-For 100,000 integer keys:
-- **SwissHash**: 2,176 KB contiguous native memory, 4 GC slots
-- **Ruby Hash**: managed via GC slots (not directly measurable)
-- **Load factor**: 76.3% actual (max 87.5%)
-- **GC pressure**: zero GC runs during insertion
+For 100,000 integer keys in the current benchmark:
+
+| Implementation | Reported memory |
+|---|---:|
+| SwissHash | 2,176 KB native + 4 GC slots |
+| Ruby Hash | 3 GC slots; native memory not directly measurable from this benchmark |
+
+Additional stats: load factor 76.3%, max load factor 87.5%, SIMD path reported as SWAR on the benchmark machine.
 
 ## Features
 
-- **SIMD-optimized probing**: SSE2 (16-byte groups) on x86_64, NEON (8-byte groups) on ARM64, SWAR fallback elsewhere
-- **Memory efficient**: Swiss Table layout with 87.5% max load factor
-- **Tombstone compaction**: Automatic cleanup of deleted entries during resize
-- **Ruby compatibility**: Supports frozen string keys, all Ruby object types
-- **Thread safety**: Prevents reentrant modifications during callbacks
+- **Swiss Table probing**: 7-bit `H2` metadata, group probing, triangular probe sequence, and 87.5% max load factor.
+- **Fast string-key path**: wyhash for string keys, frozen string key preparation, ASCII-7bit equality shortcut, and direct `memcmp` when encodings are compatible.
+- **Low GC pressure**: keys and values are Ruby objects, while control bytes and slots live in contiguous native arrays.
+- **Delete/reinsert friendly**: tombstones are tracked and compacted to avoid pathological slowdown.
+- **Hash-like API**: basic accessors, enumeration, fetch helpers, merge/update/replace, filtering, transforming, slicing, inversion, and conversion helpers.
+- **Native hot paths**: performance-critical methods are implemented in C; small convenience wrappers live in Ruby where that does not affect the core benchmark paths.
 
 ## API
 
@@ -89,96 +102,164 @@ hash = SwissHash::Hash.new(capacity = 16)
 
 # Basic operations
 hash[key] = value
-hash[key]          # get, returns nil if absent
-hash.delete(key)   # returns old value or nil
+hash.store(key, value)
+hash[key]                  # returns nil if absent
+hash.fetch(key)
+hash.fetch(key, default)
+hash.fetch(key) { |missing_key| ... }
+hash.delete(key)           # returns old value or nil
+hash.clear
+hash.replace(other_hash)
+
+# Merge/update
+hash.merge(other_hash)
+hash.merge(other_hash) { |key, old_value, new_value| ... }
+hash.merge!(other_hash)
+hash.update(other_hash)
 
 # Enumeration
-hash.each { |k, v| ... }
+hash.each { |key, value| ... }
+hash.each_pair { |key, value| ... }
+hash.each_key { |key| ... }
+hash.each_value { |value| ... }
 hash.keys
 hash.values
+hash.to_a
 
-# Size and status
-hash.size          # also: length
+# Query helpers
+hash.size                  # also: length
 hash.empty?
-hash.key?(key)     # also: has_key?, include?
+hash.key?(key)             # also: has_key?, include?, member?
+hash.value?(value)         # also: has_value?
+hash.key(value)            # first key for value, or nil
+hash.assoc(key)
+hash.rassoc(value)
+hash.values_at(*keys)
+hash.fetch_values(*keys)
+hash.dig(key, *path)
+hash.count                 # Enumerable-compatible
 
-# Maintenance
-hash.clear
-hash.compact!      # drop tombstones without reallocating
+# Filtering and transforms
+hash.slice(*keys)
+hash.except(*keys)
+hash.select { |key, value| ... }    # also: filter
+hash.select! { |key, value| ... }   # also: filter!
+hash.reject { |key, value| ... }
+hash.reject! { |key, value| ... }
+hash.delete_if { |key, value| ... }
+hash.keep_if { |key, value| ... }
+hash.compact
+hash.compact!
+hash.transform_keys { |key| ... }
+hash.transform_keys! { |key| ... }
+hash.transform_values { |value| ... }
+hash.transform_values! { |value| ... }
+hash.invert
+hash.shift
+hash.flatten(level = 1)
 
-# Debugging
-hash.stats         # => { capacity:, size:, num_groups:, load_factor:,
-                   #      memory_bytes:, growth_left:, tombstones:, simd: }
+# Conversion
+hash.to_h                  # returns a Ruby Hash
+hash.to_sh                 # returns a shallow SwissHash copy
+
+# Maintenance / debugging
+hash.compact_storage!      # drop tombstones without changing values
+hash.stats                 # => { capacity:, size:, num_groups:, load_factor:,
+                           #      memory_bytes:, growth_left:, tombstones:,
+                           #      simd:, layout: }
 ```
+
+### Compatibility notes
+
+SwissHash aims to cover the practical subset of `Hash` that is useful for a fast native hash map, but it is not a drop-in replacement for every Ruby Hash semantic.
+
+Not currently supported:
+
+- default values and default blocks from `Hash.new(default)` / `Hash.new { ... }`
+- `compare_by_identity`
+- full insertion-order guarantees
+- every rarely used method from Ruby's full `Hash` API
 
 ## Usage Recommendations
 
 Use SwissHash when:
-- Your hash keys are **strings** — inserts are 25–35% faster, lookups are on par or faster
-- Your hash holds **10,000+ entries** with any mix of reads, writes, and deletes
-- You do **heavy delete/reinsert churn** — tombstone compaction handles it without pathological slowdown
-- You need **predictable native memory** instead of scattered GC allocations
+
+- keys are mostly **strings** and insert speed matters;
+- the map commonly holds **10,000+ entries**;
+- workloads include deletes and reinserts;
+- predictable native memory layout and lower Ruby-object churn are useful.
 
 Stick with Ruby's built-in `Hash` when:
-- Your hash is small (≤ a few hundred entries) and mostly lookup-heavy with integer keys — Ruby's AR-table wins for small integer-keyed workloads
-- You depend on Hash-specific semantics: default blocks, `compare_by_identity`, full insertion-order guarantees, or the complete `Hash` API
+
+- the hash is small and mostly lookup-heavy with integer keys;
+- you depend on exact Ruby Hash semantics such as defaults, insertion order, `compare_by_identity`, or the complete standard API;
+- the code path benefits from VM-level `Hash#[]` specialization more than from the underlying table layout.
 
 ## Architecture
 
 ### Swiss Table core
-- **Open addressing** with 7-bit `H2` metadata byte per slot; SIMD rejects non-matching slots in parallel
-- **Group size 16 on SSE2** (full `_mm_movemask_epi8` width, matching Abseil / hashbrown); **group size 8 on NEON** and portable SWAR fallback — matches hashbrown's deliberate ARM choice (NEON's multi-cycle movemask latency makes 16-wide groups lose to 8-wide SWAR)
-- **Triangular probing** — `i(i+1)/2` — guarantees full coverage on power-of-2 capacities
-- **Max load factor 87.5%** (7/8)
+
+- **Open addressing** with 7-bit `H2` metadata byte per slot; group matching rejects non-matching slots in batches.
+- **Group size 16 on SSE2** and **group size 8 on portable SWAR**. On the benchmarked Apple Silicon machine the active path is SWAR.
+- **Triangular probing** — `i(i+1)/2` — over power-of-two group counts.
+- **Max load factor 87.5%** (7/8).
 
 ### Ruby-specific adaptations
-- **wyhash** for string keys — faster than Ruby's SipHash on short strings, which dominate typical workloads
-- **Fibonacci multiplicative hash** for Fixnum and Symbol keys — their low bits are already well-distributed, so avalanche mixers would be wasted work
-- **ASCII-7bit fast-path** in key equality: frozen string keys have their coderange pre-computed on insert, so subsequent lookup comparisons skip `rb_enc_compatible` entirely and go straight to `memcmp`
-- **Encoding-index equality check** as the first fast path in key comparison — avoids `rb_enc_compatible` on the common case of matching encodings
-- **Inline `RTYPEDDATA_DATA`** on hot methods (`[]`, `[]=`, `delete`, `key?`) — skips the type-check overhead of `TypedData_Get_Struct` on every operation
-- **Prefetch `slots[off]`** right after the control-byte load so DRAM fetch overlaps with SIMD match extraction
+
+- **wyhash** for string keys.
+- **Fibonacci multiplicative hash** for Fixnum and Symbol keys.
+- **Frozen string key preparation** to avoid later key mutation surprises.
+- **ASCII-7bit and encoding-index equality fast paths** before falling back to Ruby-compatible string comparison.
+- **Inline `RTYPEDDATA_DATA`** on hot methods (`[]`, `[]=`, `delete`, `key?`) to avoid repeated typed-data checks.
+- **Prefetch of slot groups** after control-byte load so data fetch overlaps with match extraction.
 
 ### Memory layout
-- Separate control-byte array and slot array (hashbrown-style) — the tight control array scans well through L1/L2
-- No zero-initialization of slot memory (`malloc` instead of `calloc`) — slots are only ever read after their control byte confirms they're live
+
+- Separate control-byte array and slot array.
+- Native arrays are allocated outside Ruby's object heap; keys and values are still marked for GC.
+- Slot memory is not zero-initialized on allocation; slots are read only after their control byte marks them live.
 
 ## Build
 
+```bash
+bundle install
+bundle exec rake compile
 ```
-rake compile
+
+## Test
+
+```bash
+bundle exec ruby test/hash_api_test.rb
+bundle exec ruby test/string_key_mutation_test.rb
 ```
 
 ## Benchmarking
-
-The included `benchmark.rb` produces statistically honest results:
 
 ```bash
 bundle exec ruby benchmark.rb
 ```
 
-Key features that make it trustworthy:
-- **Interleaved Ruby/SwissHash measurements** per iteration with alternating start order — thermal throttling and fluctuating background load hit both sides equally
-- **21 iterations with IQR-filtered mean** (trims top and bottom 25%) — more robust than median on noisy laptop hardware
-- **5 warmup runs** to settle JIT, caches, and branch predictor
-- **Per-side coefficient of variation** (`±X.X%`) displayed so you can distinguish a real 5% delta from 5% noise
-- **Correctness smoke test** runs before measurement
+The benchmark includes a smoke test before timing and prints the active SIMD/SWAR path in the memory section.
 
 ### Profiling
 
 For profiling on macOS:
 
 ```bash
-bundle exec ruby simp.rb            # runs infinite lookup loop, prints PID
+bundle exec ruby simp.rb            # runs an infinite lookup loop and prints PID
 sample <PID> 60 -f /tmp/swiss.sample
 filtercalltree /tmp/swiss.sample | head -100
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Design References
 
 - Matt Kulukundis, ["Designing a Fast, Efficient, Cache-friendly Hash Table, Step by Step"](https://www.youtube.com/watch?v=ncHmEUmJZf4) — CppCon 2017
 - [Abseil: SwissTables design](https://abseil.io/about/design/swisstables)
-- [rust-lang/hashbrown](https://github.com/rust-lang/hashbrown) — reference for SSE2/NEON/SWAR strategy choices
+- [rust-lang/hashbrown](https://github.com/rust-lang/hashbrown) — reference for SSE2/portable group strategy choices
 - [Go 1.24 maps](https://go.dev/blog/swisstable) — probing and resize design trade-offs
 - Aria Beingessner, ["Swisstable, a Quick and Dirty Description"](https://faultlore.com/blah/hashbrown-tldr/) — implementer's notes
 
