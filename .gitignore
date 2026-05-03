@@ -79,3 +79,4 @@ ext/**/mkmf.log
 # OS
 .DS_Store
 Thumbs.db
+samples

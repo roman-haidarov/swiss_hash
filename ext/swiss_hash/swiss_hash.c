@@ -12,6 +12,20 @@
 #endif
 #endif
 
+#ifndef RB_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define RB_LIKELY(x) __builtin_expect(!!(x), 1)
+#else
+#define RB_LIKELY(x) (x)
+#endif
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define SH_ALWAYS_INLINE static inline __attribute__((always_inline))
+#else
+#define SH_ALWAYS_INLINE static inline
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define SH_PREFETCH(p) __builtin_prefetch((const void *)(p), 0, 1)
 #else
@@ -20,6 +34,7 @@
 
 static uint64_t swiss_hash_seed0;
 static uint64_t swiss_hash_seed1;
+static VALUE cSwissHashHash;
 
 static void init_hash_seed(void) {
     VALUE seed_val = rb_hash(INT2FIX(0));
@@ -132,18 +147,12 @@ static inline uint64_t wyhash(const void *data, size_t len, uint64_t seed) {
 #define SWISS_USE_SSE2 1
 #include <emmintrin.h>
 
-#define GROUP_SIZE  16
-#define GROUP_MASK  0xFFFFu
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define SWISS_USE_NEON 1
-#include <arm_neon.h>
-
-#define GROUP_SIZE  8
-#define GROUP_MASK  0xFFu
+#define GROUP_SIZE 16
+#define GROUP_MASK 0xFFFFu
 #else
-#define SWISS_USE_PORTABLE 1
-#define GROUP_SIZE  8
-#define GROUP_MASK  0xFFu
+#define SWISS_USE_SWAR 1
+#define GROUP_SIZE     8
+#define GROUP_MASK     0xFFu
 #endif
 
 #ifdef SWISS_USE_SSE2
@@ -170,80 +179,44 @@ static inline uint32_t ctrl_match_empty(const uint8_t *ctrl) {
     return ctrl_match_empty_vec(ctrl_load(ctrl));
 }
 
-#elif defined(SWISS_USE_NEON)
+#else /* SWAR */
 
-static inline uint32_t neon_movemask(uint8x8_t v) {
-    static const uint8_t power_of_two[8] = {1, 2, 4, 8, 16, 32, 64, 128};
-    uint8x8_t bits = vand_u8(v, vld1_u8(power_of_two));
-    bits = vpadd_u8(bits, bits);
-    bits = vpadd_u8(bits, bits);
-    bits = vpadd_u8(bits, bits);
-    return (uint32_t)vget_lane_u8(bits, 0);
+#define SWAR_LSB 0x0101010101010101ULL
+#define SWAR_MSB 0x8080808080808080ULL
+
+SH_ALWAYS_INLINE uint32_t ctrl_bitmask_from_msb(uint64_t msb_bits) {
+    uint64_t bits = (msb_bits & SWAR_MSB) >> 7;
+    return (uint32_t)((bits * 0x0102040810204080ULL) >> 56);
 }
 
-static inline uint8x8_t ctrl_load(const uint8_t *ctrl) {
-    return vld1_u8(ctrl);
-}
-
-static inline uint32_t ctrl_match_h2_vec(uint8x8_t cv, uint8_t h2) {
-    return neon_movemask(vceq_u8(cv, vdup_n_u8(h2)));
-}
-
-static inline uint32_t ctrl_match_empty_vec(uint8x8_t cv) {
-    return neon_movemask(vceq_u8(cv, vdup_n_u8(CTRL_EMPTY)));
-}
-
-static inline uint32_t ctrl_match_empty_or_deleted_vec(uint8x8_t cv) {
-    uint8x8_t msb = vshr_n_u8(cv, 7);
-    uint8x8_t match = vceq_u8(msb, vdup_n_u8(1));
-    return neon_movemask(match);
-}
-
-static inline uint32_t ctrl_match_empty(const uint8_t *ctrl) {
-    return ctrl_match_empty_vec(ctrl_load(ctrl));
-}
-
-#else /* portable */
-
-static inline uint32_t ctrl_match_h2_raw(const uint8_t *ctrl, uint8_t h2) {
+SH_ALWAYS_INLINE uint32_t ctrl_match_h2_raw(const uint8_t *ctrl, uint8_t h2) {
     uint64_t c;
     memcpy(&c, ctrl, 8);
-    uint64_t broadcast = 0x0101010101010101ULL * h2;
+    uint64_t broadcast = SWAR_LSB * h2;
     uint64_t xored = c ^ broadcast;
-    uint64_t result = (xored - 0x0101010101010101ULL) & ~xored & 0x8080808080808080ULL;
-    uint32_t mask = 0;
-    for (int i = 0; i < 8; i++) {
-        if (result & (0x80ULL << (i * 8)))
-            mask |= (1u << i);
-    }
-    return mask;
+    uint64_t result = (xored - SWAR_LSB) & ~xored & SWAR_MSB;
+    return ctrl_bitmask_from_msb(result);
 }
 
-static inline uint32_t ctrl_match_empty_raw(const uint8_t *ctrl) {
-    uint32_t mask = 0;
-    for (int i = 0; i < 8; i++) {
-        if (ctrl[i] == CTRL_EMPTY)
-            mask |= (1u << i);
-    }
-    return mask;
+SH_ALWAYS_INLINE uint32_t ctrl_match_empty_raw(const uint8_t *ctrl) {
+    uint64_t c;
+    memcpy(&c, ctrl, 8);
+    return ctrl_bitmask_from_msb((c & ~(c << 6)) & SWAR_MSB);
 }
 
-static inline uint32_t ctrl_match_empty_or_deleted_raw(const uint8_t *ctrl) {
-    uint32_t mask = 0;
-    for (int i = 0; i < 8; i++) {
-        if (ctrl[i] & 0x80)
-            mask |= (1u << i);
-    }
-    return mask;
+SH_ALWAYS_INLINE uint32_t ctrl_match_empty_or_deleted_raw(const uint8_t *ctrl) {
+    uint64_t c;
+    memcpy(&c, ctrl, 8);
+    return ctrl_bitmask_from_msb(c);
 }
 
-static inline uint32_t ctrl_match_empty(const uint8_t *ctrl) {
+SH_ALWAYS_INLINE uint32_t ctrl_match_empty(const uint8_t *ctrl) {
     return ctrl_match_empty_raw(ctrl);
 }
 
-#endif /* SIMD selection */
+#endif /* control-byte matching selection */
 
-static inline int ctz32(uint32_t v) {
+SH_ALWAYS_INLINE int ctz32(uint32_t v) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_ctz(v);
 #elif defined(_MSC_VER)
@@ -293,7 +266,7 @@ typedef struct {
 
 #define FIBONACCI_HASH_C 0x9E3779B97F4A7C15ULL
 
-static inline uint64_t compute_hash(VALUE key) {
+SH_ALWAYS_INLINE uint64_t compute_hash(VALUE key) {
     uint64_t v;
 
     if (FIXNUM_P(key)) {
@@ -327,16 +300,20 @@ static inline uint64_t compute_hash(VALUE key) {
 #define H1(hash) ((hash) >> 7)
 #define H2(hash) ((uint8_t)((hash) & H2_MASK))
 
-static inline int keys_equal(VALUE a, VALUE b) {
-    if (a == b) return 1;
-    if (FIXNUM_P(a) || SYMBOL_P(a) || SPECIAL_CONST_P(a)) return 0;
+SH_ALWAYS_INLINE int keys_equal(VALUE a, VALUE b) {
+    if (a == b)
+        return 1;
+    if (FIXNUM_P(a) || SYMBOL_P(a) || SPECIAL_CONST_P(a))
+        return 0;
 
     if (RB_TYPE_P(a, T_STRING) && RB_TYPE_P(b, T_STRING)) {
         long la = RSTRING_LEN(a);
-        if (la != RSTRING_LEN(b)) return 0;
+        if (la != RSTRING_LEN(b))
+            return 0;
         const char *pa = RSTRING_PTR(a);
         const char *pb = RSTRING_PTR(b);
-        if (pa == pb) return 1;
+        if (pa == pb)
+            return 1;
 
         int ea = ENCODING_GET(a);
         int eb = ENCODING_GET(b);
@@ -344,8 +321,7 @@ static inline int keys_equal(VALUE a, VALUE b) {
             return memcmp(pa, pb, (size_t)la) == 0;
         }
 
-        if (ENC_CODERANGE(a) == ENC_CODERANGE_7BIT &&
-            ENC_CODERANGE(b) == ENC_CODERANGE_7BIT) {
+        if (ENC_CODERANGE(a) == ENC_CODERANGE_7BIT && ENC_CODERANGE(b) == ENC_CODERANGE_7BIT) {
             return memcmp(pa, pb, (size_t)la) == 0;
         }
 
@@ -358,12 +334,17 @@ static inline int keys_equal(VALUE a, VALUE b) {
     return rb_eql(a, b);
 }
 
-static inline VALUE prepare_key(VALUE key) {
+#ifndef SWISS_HASH_COPY_STRING_KEYS
+#define SWISS_HASH_COPY_STRING_KEYS 1
+#endif
+
+SH_ALWAYS_INLINE VALUE prepare_key(VALUE key) {
     if (RB_TYPE_P(key, T_STRING)) {
+#if SWISS_HASH_COPY_STRING_KEYS
         if (!OBJ_FROZEN(key)) {
             key = rb_str_new_frozen(key);
         }
-
+#endif
         rb_enc_str_coderange(key);
     }
     return key;
@@ -414,7 +395,7 @@ typedef struct {
     size_t group_mask;
 } ProbeSeq;
 
-static inline ProbeSeq probe_start(uint64_t h1, size_t group_mask) {
+SH_ALWAYS_INLINE ProbeSeq probe_start(uint64_t h1, size_t group_mask) {
     ProbeSeq ps;
     ps.group_idx = (size_t)(h1)&group_mask;
     ps.stride = 0;
@@ -422,7 +403,7 @@ static inline ProbeSeq probe_start(uint64_t h1, size_t group_mask) {
     return ps;
 }
 
-static inline void probe_next(ProbeSeq *ps) {
+SH_ALWAYS_INLINE void probe_next(ProbeSeq *ps) {
     ps->stride++;
     ps->group_idx = (ps->group_idx + ps->stride) & ps->group_mask;
 }
@@ -442,11 +423,6 @@ static VALUE *swiss_lookup(SwissHash *sh, VALUE key) {
         SH_PREFETCH(&sh->slots[off]);
         uint32_t match = ctrl_match_h2_vec(cv, h2);
         uint32_t empty = ctrl_match_empty_vec(cv);
-#elif defined(SWISS_USE_NEON)
-        uint8x8_t cv = ctrl_load(sh->ctrl + off);
-        SH_PREFETCH(&sh->slots[off]);
-        uint32_t match = ctrl_match_h2_vec(cv, h2);
-        uint32_t empty = ctrl_match_empty_vec(cv);
 #else
         SH_PREFETCH(&sh->slots[off]);
         uint32_t match = ctrl_match_h2_raw(sh->ctrl + off, h2);
@@ -455,7 +431,7 @@ static VALUE *swiss_lookup(SwissHash *sh, VALUE key) {
         while (match) {
             int slot = ctz32(match);
             Slot *s = &sh->slots[off + slot];
-            if (keys_equal(s->key, key)) {
+            if (RB_LIKELY(s->key == key) || keys_equal(s->key, key)) {
                 return &s->value;
             }
             match &= match - 1;
@@ -470,7 +446,7 @@ static VALUE *swiss_lookup(SwissHash *sh, VALUE key) {
 static void swiss_grow(SwissHash *sh);
 static void swiss_compact(SwissHash *sh);
 
-static inline void swiss_insert_rehash(SwissHash *sh, uint64_t hash, VALUE key, VALUE value) {
+SH_ALWAYS_INLINE void swiss_insert_rehash(SwissHash *sh, uint64_t hash, VALUE key, VALUE value) {
     uint8_t h2 = H2(hash);
     ProbeSeq ps = probe_start(H1(hash), sh->group_mask);
 
@@ -555,13 +531,8 @@ static VALUE swiss_insert(SwissHash *sh, VALUE key, VALUE value) {
         uint32_t match = ctrl_match_h2_vec(cv, h2);
         uint32_t empty = ctrl_match_empty_vec(cv);
         uint32_t avail = ctrl_match_empty_or_deleted_vec(cv);
-#elif defined(SWISS_USE_NEON)
-        uint8x8_t cv = ctrl_load(sh->ctrl + off);
-        SH_PREFETCH(&sh->slots[off]);
-        uint32_t match = ctrl_match_h2_vec(cv, h2);
-        uint32_t empty = ctrl_match_empty_vec(cv);
-        uint32_t avail = ctrl_match_empty_or_deleted_vec(cv);
 #else
+        SH_PREFETCH(&sh->slots[off]);
         uint32_t match = ctrl_match_h2_raw(sh->ctrl + off, h2);
         uint32_t empty = ctrl_match_empty_raw(sh->ctrl + off);
         uint32_t avail = ctrl_match_empty_or_deleted_raw(sh->ctrl + off);
@@ -569,8 +540,9 @@ static VALUE swiss_insert(SwissHash *sh, VALUE key, VALUE value) {
         while (match) {
             int slot = ctz32(match);
             size_t idx = off + slot;
-            if (keys_equal(sh->slots[idx].key, key)) {
-                sh->slots[idx].value = value;
+            Slot *s = &sh->slots[idx];
+            if (RB_LIKELY(s->key == key) || keys_equal(s->key, key)) {
+                s->value = value;
                 return value;
             }
             match &= match - 1;
@@ -614,11 +586,6 @@ static VALUE swiss_delete(SwissHash *sh, VALUE key) {
         SH_PREFETCH(&sh->slots[off]);
         uint32_t match = ctrl_match_h2_vec(cv, h2);
         uint32_t empty = ctrl_match_empty_vec(cv);
-#elif defined(SWISS_USE_NEON)
-        uint8x8_t cv = ctrl_load(sh->ctrl + off);
-        SH_PREFETCH(&sh->slots[off]);
-        uint32_t match = ctrl_match_h2_vec(cv, h2);
-        uint32_t empty = ctrl_match_empty_vec(cv);
 #else
         SH_PREFETCH(&sh->slots[off]);
         uint32_t match = ctrl_match_h2_raw(sh->ctrl + off, h2);
@@ -627,8 +594,9 @@ static VALUE swiss_delete(SwissHash *sh, VALUE key) {
         while (match) {
             int slot = ctz32(match);
             size_t idx = off + slot;
-            if (keys_equal(sh->slots[idx].key, key)) {
-                VALUE old_value = sh->slots[idx].value;
+            Slot *s = &sh->slots[idx];
+            if (RB_LIKELY(s->key == key) || keys_equal(s->key, key)) {
+                VALUE old_value = s->value;
 
                 MUTATE_GUARD_BEGIN(sh);
                 sh->ctrl[idx] = CTRL_DELETED;
@@ -750,6 +718,36 @@ static VALUE swiss_hash_initialize(int argc, VALUE *argv, VALUE self) {
     return self;
 }
 
+static VALUE swiss_hash_initialize_copy(VALUE self, VALUE original) {
+    if (self == original) {
+        return self;
+    }
+
+    SwissHash *src;
+    SwissHash *dst;
+    TypedData_Get_Struct(original, SwissHash, &swiss_hash_type, src);
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, dst);
+
+    if (dst->ctrl || dst->slots) {
+        swiss_free_arrays(dst);
+    }
+
+    if (!src->ctrl || !src->slots) {
+        swiss_init(dst, 16);
+        return self;
+    }
+
+    swiss_init(dst, src->capacity);
+    memcpy(dst->ctrl, src->ctrl, src->capacity * sizeof(uint8_t));
+    memcpy(dst->slots, src->slots, src->capacity * sizeof(Slot));
+    dst->size = src->size;
+    dst->growth_left = src->growth_left;
+    dst->tombstone_count = src->tombstone_count;
+    dst->mutating = 0;
+
+    return self;
+}
+
 static VALUE swiss_hash_aset(VALUE self, VALUE key, VALUE value) {
     SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
     if (RB_UNLIKELY(!(FIXNUM_P(key) || SYMBOL_P(key)))) {
@@ -838,13 +836,544 @@ static VALUE swiss_hash_values(VALUE self) {
     return ary;
 }
 
+static VALUE swiss_hash_each_key(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            rb_yield(sh->slots[i].key);
+        }
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_each_value(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            rb_yield(sh->slots[i].value);
+        }
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_to_h(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    VALUE hash = rb_hash_new();
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            rb_hash_aset(hash, sh->slots[i].key, sh->slots[i].value);
+        }
+    }
+
+    return hash;
+}
+
+static VALUE swiss_hash_to_a(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    VALUE ary = rb_ary_new_capa(sh->size);
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE pair = rb_ary_new_capa(2);
+            rb_ary_push(pair, sh->slots[i].key);
+            rb_ary_push(pair, sh->slots[i].value);
+            rb_ary_push(ary, pair);
+        }
+    }
+
+    return ary;
+}
+
+static VALUE swiss_hash_fetch(int argc, VALUE *argv, VALUE self) {
+    VALUE key;
+    VALUE default_value;
+    rb_scan_args(argc, argv, "11", &key, &default_value);
+
+    SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
+    VALUE *val = swiss_lookup(sh, key);
+    if (val) {
+        return *val;
+    }
+
+    if (rb_block_given_p()) {
+        if (argc == 2) {
+            rb_warn("block supersedes default value argument");
+        }
+        return rb_yield(key);
+    }
+
+    if (argc == 2) {
+        return default_value;
+    }
+
+    VALUE inspected = rb_inspect(key);
+    VALUE message = rb_str_plus(rb_str_new_cstr("key not found: "), inspected);
+    rb_exc_raise(rb_exc_new_str(rb_eKeyError, message));
+
+    return Qnil;
+}
+
+static VALUE swiss_hash_values_at(int argc, VALUE *argv, VALUE self) {
+    SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
+    VALUE ary = rb_ary_new_capa((long)argc);
+
+    for (int i = 0; i < argc; i++) {
+        VALUE *val = swiss_lookup(sh, argv[i]);
+        rb_ary_push(ary, val ? *val : Qnil);
+    }
+
+    return ary;
+}
+
+static VALUE swiss_hash_value_p(VALUE self, VALUE value) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            if (RTEST(rb_equal(sh->slots[i].value, value))) {
+                return Qtrue;
+            }
+        }
+    }
+
+    return Qfalse;
+}
+
+static VALUE swiss_hash_key_for_value(VALUE self, VALUE value) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            if (RTEST(rb_equal(sh->slots[i].value, value))) {
+                return sh->slots[i].key;
+            }
+        }
+    }
+
+    return Qnil;
+}
+
 static VALUE swiss_hash_key_p(VALUE self, VALUE key) {
     SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
     VALUE *val = swiss_lookup(sh, key);
     return val ? Qtrue : Qfalse;
 }
 
+static VALUE swiss_hash_new_like(VALUE self, size_t capacity) {
+    VALUE argv[1] = {SIZET2NUM(capacity)};
+    return rb_class_new_instance(1, argv, rb_obj_class(self));
+}
+
+static VALUE swiss_hash_store_prepared(SwissHash *sh, VALUE key, VALUE value) {
+    if (RB_UNLIKELY(!(FIXNUM_P(key) || SYMBOL_P(key)))) {
+        key = prepare_key(key);
+    }
+    return swiss_insert(sh, key, value);
+}
+
+typedef struct {
+    VALUE self;
+    SwissHash *sh;
+    int has_block;
+} MergeCtx;
+
+static void swiss_hash_merge_one_pair(MergeCtx *ctx, VALUE key, VALUE value) {
+    if (ctx->has_block) {
+        VALUE *old = swiss_lookup(ctx->sh, key);
+        if (old) {
+            value = rb_yield_values(3, key, *old, value);
+        }
+    }
+    swiss_hash_store_prepared(ctx->sh, key, value);
+}
+
+static int swiss_hash_merge_ruby_hash_i(VALUE key, VALUE value, VALUE arg) {
+    swiss_hash_merge_one_pair((MergeCtx *)arg, key, value);
+    return ST_CONTINUE;
+}
+
+static void swiss_hash_merge_swiss_hash(MergeCtx *ctx, VALUE other) {
+    SwissHash *src;
+    TypedData_Get_Struct(other, SwissHash, &swiss_hash_type, src);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            swiss_hash_merge_one_pair(ctx, src->slots[i].key, src->slots[i].value);
+        }
+    }
+}
+
+static void swiss_hash_merge_one(MergeCtx *ctx, VALUE other) {
+    if (RTEST(rb_obj_is_kind_of(other, cSwissHashHash))) {
+        swiss_hash_merge_swiss_hash(ctx, other);
+        return;
+    }
+
+    VALUE hash = rb_check_hash_type(other);
+    if (NIL_P(hash)) {
+        rb_raise(rb_eTypeError, "no implicit conversion of %s into Hash", rb_obj_classname(other));
+    }
+
+    rb_hash_foreach(hash, swiss_hash_merge_ruby_hash_i, (VALUE)ctx);
+}
+
+static VALUE swiss_hash_merge_bang(int argc, VALUE *argv, VALUE self) {
+    SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
+    MergeCtx ctx = {self, sh, rb_block_given_p()};
+
+    for (int i = 0; i < argc; i++) {
+        swiss_hash_merge_one(&ctx, argv[i]);
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_merge(int argc, VALUE *argv, VALUE self) {
+    VALUE copy = rb_obj_dup(self);
+    swiss_hash_merge_bang(argc, argv, copy);
+    return copy;
+}
+
+static VALUE swiss_hash_replace(VALUE self, VALUE other) {
+    swiss_hash_clear(self);
+    VALUE argv[1] = {other};
+    swiss_hash_merge_bang(1, argv, self);
+    return self;
+}
+
+static VALUE swiss_hash_to_sh(VALUE self) {
+    return rb_obj_dup(self);
+}
+
+static VALUE swiss_hash_fetch_values(int argc, VALUE *argv, VALUE self) {
+    SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
+    VALUE ary = rb_ary_new_capa((long)argc);
+    int has_block = rb_block_given_p();
+
+    for (int i = 0; i < argc; i++) {
+        VALUE *val = swiss_lookup(sh, argv[i]);
+        if (val) {
+            rb_ary_push(ary, *val);
+        } else if (has_block) {
+            rb_ary_push(ary, rb_yield(argv[i]));
+        } else {
+            VALUE key_argv[1] = {argv[i]};
+            rb_ary_push(ary, swiss_hash_fetch(1, key_argv, self));
+        }
+    }
+
+    return ary;
+}
+
+static VALUE swiss_hash_slice(int argc, VALUE *argv, VALUE self) {
+    SwissHash *src = (SwissHash *)RTYPEDDATA_DATA(self);
+    VALUE result = swiss_hash_new_like(self, (size_t)argc);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (int i = 0; i < argc; i++) {
+        VALUE *val = swiss_lookup(src, argv[i]);
+        if (val) {
+            swiss_hash_store_prepared(dst, argv[i], *val);
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_except(int argc, VALUE *argv, VALUE self) {
+    VALUE result = rb_obj_dup(self);
+    for (int i = 0; i < argc; i++) {
+        swiss_hash_delete(result, argv[i]);
+    }
+    return result;
+}
+
+static VALUE swiss_hash_invert(VALUE self) {
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            swiss_hash_store_prepared(dst, src->slots[i].value, src->slots[i].key);
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_assoc(VALUE self, VALUE object) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            if (RTEST(rb_equal(sh->slots[i].key, object))) {
+                VALUE ary = rb_ary_new_capa(2);
+                rb_ary_push(ary, sh->slots[i].key);
+                rb_ary_push(ary, sh->slots[i].value);
+                return ary;
+            }
+        }
+    }
+
+    return Qnil;
+}
+
+static VALUE swiss_hash_rassoc(VALUE self, VALUE object) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            if (RTEST(rb_equal(sh->slots[i].value, object))) {
+                VALUE ary = rb_ary_new_capa(2);
+                rb_ary_push(ary, sh->slots[i].key);
+                rb_ary_push(ary, sh->slots[i].value);
+                return ary;
+            }
+        }
+    }
+
+    return Qnil;
+}
+
+static VALUE swiss_hash_shift(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE key = sh->slots[i].key;
+            VALUE value = sh->slots[i].value;
+            sh->ctrl[i] = CTRL_DELETED;
+            sh->slots[i].key = Qnil;
+            sh->slots[i].value = Qnil;
+            sh->size--;
+            sh->tombstone_count++;
+
+            VALUE ary = rb_ary_new_capa(2);
+            rb_ary_push(ary, key);
+            rb_ary_push(ary, value);
+            return ary;
+        }
+    }
+
+    return Qnil;
+}
+
+static VALUE swiss_hash_delete_if(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE key = sh->slots[i].key;
+            VALUE value = sh->slots[i].value;
+            if (RTEST(rb_yield_values(2, key, value))) {
+                swiss_delete(sh, key);
+            }
+        }
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_keep_if(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE key = sh->slots[i].key;
+            VALUE value = sh->slots[i].value;
+            if (!RTEST(rb_yield_values(2, key, value))) {
+                swiss_delete(sh, key);
+            }
+        }
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_select(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE key = src->slots[i].key;
+            VALUE value = src->slots[i].value;
+            if (RTEST(rb_yield_values(2, key, value))) {
+                swiss_hash_store_prepared(dst, key, value);
+            }
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_reject(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            VALUE key = src->slots[i].key;
+            VALUE value = src->slots[i].value;
+            if (!RTEST(rb_yield_values(2, key, value))) {
+                swiss_hash_store_prepared(dst, key, value);
+            }
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_select_bang(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    size_t old_size = ((SwissHash *)RTYPEDDATA_DATA(self))->size;
+    swiss_hash_keep_if(self);
+    return ((SwissHash *)RTYPEDDATA_DATA(self))->size == old_size ? Qnil : self;
+}
+
+static VALUE swiss_hash_reject_bang(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    size_t old_size = ((SwissHash *)RTYPEDDATA_DATA(self))->size;
+    swiss_hash_delete_if(self);
+    return ((SwissHash *)RTYPEDDATA_DATA(self))->size == old_size ? Qnil : self;
+}
+
+static VALUE swiss_hash_compact(VALUE self) {
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED && !NIL_P(src->slots[i].value)) {
+            swiss_hash_store_prepared(dst, src->slots[i].key, src->slots[i].value);
+        }
+    }
+
+    return result;
+}
+
 static VALUE swiss_hash_compact_bang(VALUE self) {
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+    size_t old_size = sh->size;
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED && NIL_P(sh->slots[i].value)) {
+            VALUE key = sh->slots[i].key;
+            swiss_delete(sh, key);
+        }
+    }
+
+    return sh->size == old_size ? Qnil : self;
+}
+
+static VALUE swiss_hash_transform_values(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            swiss_hash_store_prepared(dst, src->slots[i].key, rb_yield(src->slots[i].value));
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_transform_values_bang(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *sh;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    for (size_t i = 0; i < sh->capacity; i++) {
+        uint8_t c = sh->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            sh->slots[i].value = rb_yield(sh->slots[i].value);
+        }
+    }
+
+    return self;
+}
+
+static VALUE swiss_hash_transform_keys(VALUE self) {
+    RETURN_ENUMERATOR(self, 0, 0);
+
+    SwissHash *src;
+    TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, src);
+    VALUE result = swiss_hash_new_like(self, src->size);
+    SwissHash *dst = (SwissHash *)RTYPEDDATA_DATA(result);
+
+    for (size_t i = 0; i < src->capacity; i++) {
+        uint8_t c = src->ctrl[i];
+        if (c != CTRL_EMPTY && c != CTRL_DELETED) {
+            swiss_hash_store_prepared(dst, rb_yield(src->slots[i].key), src->slots[i].value);
+        }
+    }
+
+    return result;
+}
+
+static VALUE swiss_hash_compact_storage_bang(VALUE self) {
     SwissHash *sh;
     TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
 
@@ -872,10 +1401,8 @@ static VALUE swiss_hash_stats(VALUE self) {
 
 #ifdef SWISS_USE_SSE2
     rb_hash_aset(hash, ID2SYM(rb_intern("simd")), rb_str_new_cstr("SSE2"));
-#elif defined(SWISS_USE_NEON)
-    rb_hash_aset(hash, ID2SYM(rb_intern("simd")), rb_str_new_cstr("NEON"));
 #else
-    rb_hash_aset(hash, ID2SYM(rb_intern("simd")), rb_str_new_cstr("portable/SWAR"));
+    rb_hash_aset(hash, ID2SYM(rb_intern("simd")), rb_str_new_cstr("SWAR"));
 #endif
     rb_hash_aset(hash, ID2SYM(rb_intern("layout")), rb_str_new_cstr("hybrid"));
 
@@ -887,9 +1414,11 @@ void Init_swiss_hash(void) {
 
     VALUE mSwissHash = rb_define_module("SwissHash");
     VALUE cHash = rb_define_class_under(mSwissHash, "Hash", rb_cObject);
+    cSwissHashHash = cHash;
 
     rb_define_alloc_func(cHash, swiss_hash_alloc);
     rb_define_method(cHash, "initialize", swiss_hash_initialize, -1);
+    rb_define_method(cHash, "initialize_copy", swiss_hash_initialize_copy, 1);
     rb_define_method(cHash, "[]=", swiss_hash_aset, 2);
     rb_define_method(cHash, "store", swiss_hash_aset, 2);
     rb_define_method(cHash, "[]", swiss_hash_aref, 1);
@@ -899,11 +1428,48 @@ void Init_swiss_hash(void) {
     rb_define_method(cHash, "empty?", swiss_hash_empty_p, 0);
     rb_define_method(cHash, "clear", swiss_hash_clear, 0);
     rb_define_method(cHash, "each", swiss_hash_each, 0);
+    rb_define_method(cHash, "each_pair", swiss_hash_each, 0);
+    rb_define_method(cHash, "each_key", swiss_hash_each_key, 0);
+    rb_define_method(cHash, "each_value", swiss_hash_each_value, 0);
     rb_define_method(cHash, "keys", swiss_hash_keys, 0);
     rb_define_method(cHash, "values", swiss_hash_values, 0);
+    rb_define_method(cHash, "to_h", swiss_hash_to_h, 0);
+    rb_define_method(cHash, "to_a", swiss_hash_to_a, 0);
+    rb_define_method(cHash, "fetch", swiss_hash_fetch, -1);
+    rb_define_method(cHash, "values_at", swiss_hash_values_at, -1);
+    rb_define_method(cHash, "fetch_values", swiss_hash_fetch_values, -1);
+    rb_define_method(cHash, "merge!", swiss_hash_merge_bang, -1);
+    rb_define_method(cHash, "update", swiss_hash_merge_bang, -1);
+    rb_define_method(cHash, "merge", swiss_hash_merge, -1);
+    rb_define_method(cHash, "replace", swiss_hash_replace, 1);
+    rb_define_method(cHash, "to_sh", swiss_hash_to_sh, 0);
+    rb_define_method(cHash, "slice", swiss_hash_slice, -1);
+    rb_define_method(cHash, "except", swiss_hash_except, -1);
+    rb_define_method(cHash, "invert", swiss_hash_invert, 0);
+    rb_define_method(cHash, "assoc", swiss_hash_assoc, 1);
+    rb_define_method(cHash, "rassoc", swiss_hash_rassoc, 1);
+    rb_define_method(cHash, "shift", swiss_hash_shift, 0);
+    rb_define_method(cHash, "delete_if", swiss_hash_delete_if, 0);
+    rb_define_method(cHash, "keep_if", swiss_hash_keep_if, 0);
+    rb_define_method(cHash, "select", swiss_hash_select, 0);
+    rb_define_method(cHash, "filter", swiss_hash_select, 0);
+    rb_define_method(cHash, "reject", swiss_hash_reject, 0);
+    rb_define_method(cHash, "select!", swiss_hash_select_bang, 0);
+    rb_define_method(cHash, "filter!", swiss_hash_select_bang, 0);
+    rb_define_method(cHash, "reject!", swiss_hash_reject_bang, 0);
+    rb_define_method(cHash, "compact", swiss_hash_compact, 0);
+    rb_define_method(cHash, "compact!", swiss_hash_compact_bang, 0);
+    rb_define_method(cHash, "transform_values", swiss_hash_transform_values, 0);
+    rb_define_method(cHash, "transform_values!", swiss_hash_transform_values_bang, 0);
+    rb_define_method(cHash, "transform_keys", swiss_hash_transform_keys, 0);
     rb_define_method(cHash, "key?", swiss_hash_key_p, 1);
     rb_define_method(cHash, "has_key?", swiss_hash_key_p, 1);
     rb_define_method(cHash, "include?", swiss_hash_key_p, 1);
-    rb_define_method(cHash, "compact!", swiss_hash_compact_bang, 0);
+    rb_define_method(cHash, "member?", swiss_hash_key_p, 1);
+    rb_define_method(cHash, "value?", swiss_hash_value_p, 1);
+    rb_define_method(cHash, "has_value?", swiss_hash_value_p, 1);
+    rb_define_method(cHash, "key", swiss_hash_key_for_value, 1);
+    rb_define_method(cHash, "compact_storage!", swiss_hash_compact_storage_bang, 0);
+    rb_define_method(cHash, "__compact_storage!", swiss_hash_compact_storage_bang, 0);
     rb_define_method(cHash, "stats", swiss_hash_stats, 0);
 }
