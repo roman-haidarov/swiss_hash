@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 - 2026-08-18
+
+- NEON group matching on ARM64 (SSE2 on x86_64, SWAR elsewhere)
+- Single allocation for control bytes and slots
+- Faster Fixnum `[]` / `[]=`
+- 7-bit strings of different encodings hash like Ruby Hash (`"abc"` and `"abc".b` are the same key)
+- Rehash is GC-safe; `#hash` / `#eql?` that mutate the same table raise instead of corrupting it
+- `initialize` no longer leaks on reuse; OOM no longer leaves a half-built table
+
 ## 0.1.2 - Unreleased
 
 Documentation and API polish for the first public release candidate.
