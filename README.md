@@ -27,52 +27,52 @@ h.stats            # => { capacity: 16, size: 0, ... }
 
 Benchmarks below were produced by `benchmark.rb` on Ruby 3.4.3 / arm64-darwin24.
 
-Methodology: 10 runs × 21 measured iterations, 5 warmup iterations per run, IQR-filtered mean per run, interleaved Ruby/SwissHash measurements with alternating start order, and per-side coefficient of variation (`±X.X%`) reported to make noise visible.
+Methodology: 6 runs × 17 measured iterations, 4 warmup iterations per run, IQR-filtered mean per run, interleaved Ruby/SwissHash measurements with alternating start order, and per-side coefficient of variation (`±X.X%`) reported to make noise visible.
 
 ### N = 100,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 6.324 ms (±0.5%) | 5.023 ms (±0.6%) | **−20.57%** ⚡ |
-| Insert (string keys) | 16.485 ms (±4.6%) | 10.386 ms (±3.0%) | **−37.00%** ⚡ |
-| Insert (random int) | 5.963 ms (±1.2%) | 5.010 ms (±1.0%) | **−15.98%** ⚡ |
-| Lookup (sequential int, 3x) | 13.281 ms (±0.1%) | 11.116 ms (±0.1%) | **−16.31%** ⚡ |
-| Lookup (string keys, 3x) | 20.561 ms (±3.8%) | 21.535 ms (±4.9%) | +4.74% |
-| Delete + reinsert 25% | 8.965 ms (±0.7%) | 7.164 ms (±0.8%) | **−20.09%** ⚡ |
-| Mixed (70% read / 20% write / 10% delete) | 21.784 ms (±0.2%) | 18.990 ms (±0.3%) | **−12.83%** ⚡ |
+| Insert (sequential int) | 7.004 ms (±2.4%) | 5.245 ms (±1.2%) | **−25.12%** ⚡ |
+| Insert (string keys) | 17.751 ms (±1.0%) | 11.207 ms (±1.1%) | **−36.86%** ⚡ |
+| Insert (random int) | 6.148 ms (±1.8%) | 4.845 ms (±0.2%) | **−21.20%** ⚡ |
+| Lookup (sequential int, 3x) | 12.286 ms (±1.1%) | 11.614 ms (±1.1%) | **−5.47%** ⚡ |
+| Lookup (string keys, 3x) | 22.558 ms (±0.6%) | 22.650 ms (±0.9%) | +0.41% |
+| Delete + reinsert 25% | 9.517 ms (±0.8%) | 7.392 ms (±1.8%) | **−22.33%** ⚡ |
+| Mixed (70% read / 20% write / 10% delete) | 25.333 ms (±2.0%) | 21.860 ms (±3.4%) | **−13.71%** ⚡ |
 
 ### N = 10,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 0.578 ms (±1.1%) | 0.510 ms (±1.1%) | **−11.82%** ⚡ |
-| Insert (string keys) | 1.522 ms (±3.5%) | 0.992 ms (±1.6%) | **−34.80%** ⚡ |
-| Insert (random int) | 0.554 ms (±2.0%) | 0.501 ms (±2.5%) | **−9.53%** ⚡ |
-| Lookup (sequential int, 3x) | 1.071 ms (±0.3%) | 1.065 ms (±0.1%) | −0.55% |
-| Lookup (string keys, 3x) | 1.710 ms (±1.3%) | 1.563 ms (±1.4%) | **−8.58%** ⚡ |
-| Delete + reinsert 25% | 0.814 ms (±1.6%) | 0.714 ms (±1.2%) | **−12.29%** ⚡ |
-| Mixed (70% read / 20% write / 10% delete) | 1.988 ms (±0.4%) | 1.869 ms (±0.5%) | **−5.98%** ⚡ |
+| Insert (sequential int) | 0.606 ms (±2.8%) | 0.518 ms (±1.3%) | **−14.57%** ⚡ |
+| Insert (string keys) | 1.638 ms (±1.9%) | 1.057 ms (±1.2%) | **−35.49%** ⚡ |
+| Insert (random int) | 0.583 ms (±1.5%) | 0.507 ms (±1.2%) | **−13.07%** ⚡ |
+| Lookup (sequential int, 3x) | 1.108 ms (±1.3%) | 1.063 ms (±1.4%) | **−4.02%** ⚡ |
+| Lookup (string keys, 3x) | 1.748 ms (±1.5%) | 1.623 ms (±1.3%) | **−7.12%** ⚡ |
+| Delete + reinsert 25% | 0.859 ms (±2.2%) | 0.740 ms (±2.2%) | **−13.85%** ⚡ |
+| Mixed (70% read / 20% write / 10% delete) | 2.123 ms (±1.1%) | 1.928 ms (±1.2%) | **−9.21%** ⚡ |
 
 ### N = 1,000
 
-Ruby Hash uses an AR-table for small hashes, so very small integer-keyed workloads can still favour the built-in implementation. String-heavy workloads continue to be the strongest SwissHash case.
+Ruby Hash uses an AR-table for small hashes, so very small integer-keyed workloads can still be close. String-heavy workloads remain the strongest SwissHash case.
 
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 0.056 ms (±0.7%) | 0.057 ms (±0.9%) | +1.88% |
-| Insert (string keys) | 0.156 ms (±2.5%) | 0.102 ms (±0.9%) | **−34.78%** ⚡ |
-| Insert (random int) | 0.054 ms (±3.5%) | 0.051 ms (±3.4%) | −6.54% |
-| Lookup (sequential int, 3x) | 0.111 ms (±0.4%) | 0.111 ms (±0.2%) | +0.29% |
-| Lookup (string keys, 3x) | 0.181 ms (±0.3%) | 0.150 ms (±0.4%) | **−17.10%** ⚡ |
-| Delete + reinsert 25% | 0.082 ms (±0.9%) | 0.079 ms (±0.5%) | −4.12% |
-| Mixed (70% read / 20% write / 10% delete) | 0.202 ms (±0.3%) | 0.197 ms (±0.2%) | −2.04% |
+| Insert (sequential int) | 0.059 ms (±3.2%) | 0.057 ms (±4.6%) | **−4.32%** ⚡ |
+| Insert (string keys) | 0.167 ms (±3.3%) | 0.108 ms (±1.8%) | **−35.17%** ⚡ |
+| Insert (random int) | 0.055 ms (±2.1%) | 0.052 ms (±2.2%) | **−6.03%** ⚡ |
+| Lookup (sequential int, 3x) | 0.114 ms (±1.8%) | 0.111 ms (±2.3%) | **−2.15%** ⚡ |
+| Lookup (string keys, 3x) | 0.184 ms (±1.3%) | 0.155 ms (±0.9%) | **−15.68%** ⚡ |
+| Delete + reinsert 25% | 0.086 ms (±2.2%) | 0.080 ms (±2.5%) | **−6.91%** ⚡ |
+| Mixed (70% read / 20% write / 10% delete) | 0.211 ms (±1.4%) | 0.202 ms (±2.0%) | **−4.66%** ⚡ |
 
 ### Summary
 
-- SwissHash is faster on **6 of 7 operations** at N=100k in the current benchmark run.
-- The strongest win is still string-key insertion: **−34% to −37%** across tested sizes.
-- Large integer-keyed inserts, delete/reinsert churn, and mixed workloads improved substantially after moving more Hash-like operations into C and keeping the hot paths lean.
-- String lookups are workload-sensitive: SwissHash wins at N=1k and N=10k, while the N=100k run is slightly slower than Ruby Hash within a noisier test band.
+- SwissHash is faster on **6 of 7 operations** at N=100k; string lookup at that size is within 1% of Ruby Hash.
+- The strongest win is still string-key insertion: **−35% to −37%** across tested sizes.
+- Sequential integer insert at N=1k now beats Ruby Hash (it lost slightly in 0.1.2).
+- ARM64 uses the NEON group-matching path (`stats[:simd] => "NEON"`).
 - Ruby's built-in `Hash` remains excellent, especially for very small maps and cases that benefit from VM-level Hash specialization.
 
 ### Memory Usage
@@ -84,12 +84,13 @@ For 100,000 integer keys in the current benchmark:
 | SwissHash | 2,176 KB native + 4 GC slots |
 | Ruby Hash | 3 GC slots; native memory not directly measurable from this benchmark |
 
-Additional stats: load factor 76.3%, max load factor 87.5%, SIMD path reported as SWAR on the benchmark machine.
+Additional stats: load factor 76.3%, max load factor 87.5%, SIMD path reported as NEON on the benchmarked Apple Silicon machine.
 
 ## Features
 
 - **Swiss Table probing**: 7-bit `H2` metadata, group probing, triangular probe sequence, and 87.5% max load factor.
-- **Fast string-key path**: wyhash for string keys, frozen string key preparation, ASCII-7bit equality shortcut, and direct `memcmp` when encodings are compatible.
+- **SIMD group matching**: SSE2 on x86_64, NEON on aarch64, SWAR fallback elsewhere.
+- **Fast string-key path**: wyhash for string keys, frozen string key preparation, 7-bit strings of different encodings hash/compare like Ruby Hash, and direct `memcmp` when encodings are compatible.
 - **Low GC pressure**: keys and values are Ruby objects, while control bytes and slots live in contiguous native arrays.
 - **Delete/reinsert friendly**: tombstones are tracked and compacted to avoid pathological slowdown.
 - **Hash-like API**: basic accessors, enumeration, fetch helpers, merge/update/replace, filtering, transforming, slicing, inversion, and conversion helpers.
@@ -200,7 +201,7 @@ Stick with Ruby's built-in `Hash` when:
 ### Swiss Table core
 
 - **Open addressing** with 7-bit `H2` metadata byte per slot; group matching rejects non-matching slots in batches.
-- **Group size 16 on SSE2** and **group size 8 on portable SWAR**. On the benchmarked Apple Silicon machine the active path is SWAR.
+- **Group size 16 on SSE2 (x86_64) and NEON (aarch64)**, **group size 8 on portable SWAR**. The active path is printed by `stats[:simd]` / the benchmark memory section (`NEON` on Apple Silicon).
 - **Triangular probing** — `i(i+1)/2` — over power-of-two group counts.
 - **Max load factor 87.5%** (7/8).
 
@@ -215,7 +216,7 @@ Stick with Ruby's built-in `Hash` when:
 
 ### Memory layout
 
-- Separate control-byte array and slot array.
+- One native allocation for control bytes followed by slots (16-byte aligned). `stats[:memory_bytes]` still counts `capacity * (1 + sizeof(Slot))`.
 - Native arrays are allocated outside Ruby's object heap; keys and values are still marked for GC.
 - Slot memory is not zero-initialized on allocation; slots are read only after their control byte marks them live.
 
@@ -231,6 +232,7 @@ bundle exec rake compile
 ```bash
 bundle exec ruby test/hash_api_test.rb
 bundle exec ruby test/string_key_mutation_test.rb
+bundle exec ruby test/safety_and_encoding_test.rb
 ```
 
 ## Benchmarking
