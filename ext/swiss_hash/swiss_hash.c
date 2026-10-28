@@ -451,32 +451,30 @@ static void swiss_free_arrays(SwissHash *sh) {
 }
 
 static void swiss_init(SwissHash *sh, size_t min_capacity) {
-    if (sh->ctrl) {
-        swiss_free_arrays(sh);
-    }
-
-    size_t min_groups = (min_capacity + GROUP_SIZE - 1) / GROUP_SIZE;
+    size_t min_groups = min_capacity / GROUP_SIZE + (min_capacity % GROUP_SIZE != 0);
     size_t num_groups = 1;
-    while (num_groups < min_groups)
+    while (num_groups < min_groups) {
+        if (num_groups > SIZE_MAX / 2) {
+            rb_raise(rb_eArgError, "SwissHash capacity is too large");
+        }
         num_groups <<= 1;
+    }
     if (num_groups < 2)
         num_groups = 2;
 
+    if (num_groups > SIZE_MAX / GROUP_SIZE) {
+        rb_raise(rb_eArgError, "SwissHash capacity is too large");
+    }
     size_t capacity = num_groups * GROUP_SIZE;
     uint8_t *ctrl = NULL;
     Slot *slots = NULL;
 
     if (!swiss_alloc_block(capacity, &ctrl, &slots)) {
-        sh->capacity = 0;
-        sh->num_groups = 0;
-        sh->group_mask = 0;
-        sh->size = 0;
-        sh->growth_left = 0;
-        sh->tombstone_count = 0;
-        sh->mutating = 0;
         rb_raise(rb_eNoMemError, "failed to allocate SwissHash");
     }
 
+    memset(ctrl, CTRL_EMPTY, capacity);
+    uint8_t *old_ctrl = sh->ctrl;
     sh->ctrl = ctrl;
     sh->slots = slots;
     sh->num_groups = num_groups;
@@ -486,7 +484,7 @@ static void swiss_init(SwissHash *sh, size_t min_capacity) {
     sh->tombstone_count = 0;
     sh->mutating = 0;
     sh->growth_left = capacity * MAX_LOAD_NUM / MAX_LOAD_DEN;
-    memset(sh->ctrl, CTRL_EMPTY, capacity);
+    free(old_ctrl);
 }
 
 typedef struct {
@@ -1019,6 +1017,10 @@ static VALUE swiss_hash_initialize(int argc, VALUE *argv, VALUE self) {
     SwissHash *sh;
     TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
 
+    if (sh->mutating) {
+        rb_raise(rb_eRuntimeError, "SwissHash: reentrant modification detected");
+    }
+
     size_t capacity = NIL_P(capacity_val) ? 16 : NUM2SIZET(capacity_val);
     swiss_init(sh, capacity);
 
@@ -1034,10 +1036,6 @@ static VALUE swiss_hash_initialize_copy(VALUE self, VALUE original) {
     SwissHash *dst;
     TypedData_Get_Struct(original, SwissHash, &swiss_hash_type, src);
     TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, dst);
-
-    if (dst->ctrl || dst->slots) {
-        swiss_free_arrays(dst);
-    }
 
     if (!src->ctrl || !src->slots) {
         swiss_init(dst, 16);
@@ -1057,6 +1055,10 @@ static VALUE swiss_hash_initialize_copy(VALUE self, VALUE original) {
 
 static VALUE swiss_hash_aset(VALUE self, VALUE key, VALUE value) {
     SwissHash *sh = (SwissHash *)RTYPEDDATA_DATA(self);
+    if (RB_UNLIKELY(sh->mutating)) {
+        rb_raise(rb_eRuntimeError, "SwissHash: reentrant modification detected "
+                                   "(#hash or #eql? callback modified the same table)");
+    }
     if (FIXNUM_P(key)) {
         return swiss_insert_fixnum(sh, key, value);
     }
@@ -1097,6 +1099,11 @@ static VALUE swiss_hash_empty_p(VALUE self) {
 static VALUE swiss_hash_clear(VALUE self) {
     SwissHash *sh;
     TypedData_Get_Struct(self, SwissHash, &swiss_hash_type, sh);
+
+    if (RB_UNLIKELY(sh->mutating)) {
+        rb_raise(rb_eRuntimeError, "SwissHash: reentrant modification detected "
+                                   "(#hash or #eql? callback modified the same table)");
+    }
 
     memset(sh->ctrl, CTRL_EMPTY, sh->capacity);
     memset(sh->slots, 0, sh->capacity * sizeof(Slot));
@@ -1372,8 +1379,16 @@ static VALUE swiss_hash_merge(int argc, VALUE *argv, VALUE self) {
 }
 
 static VALUE swiss_hash_replace(VALUE self, VALUE other) {
+    if (self == other) {
+        return self;
+    }
+
+    VALUE converted = rb_check_hash_type(other);
+    if (NIL_P(converted) && !RTEST(rb_obj_is_kind_of(other, cSwissHashHash))) {
+        rb_raise(rb_eTypeError, "no implicit conversion of %s into Hash", rb_obj_classname(other));
+    }
     swiss_hash_clear(self);
-    VALUE argv[1] = {other};
+    VALUE argv[1] = {NIL_P(converted) ? other : converted};
     swiss_hash_merge_bang(1, argv, self);
     return self;
 }
