@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require_relative 'lib/swiss_hash'
+require 'objspace'
 
 SIZES       = [1_000, 10_000, 100_000]
 ITERATIONS  = Integer(ENV.fetch('ITERATIONS', '21'))
@@ -230,6 +231,40 @@ def bench_mixed(size, iter, warmup)
   report("Mixed (70/20/10 R/W/D)", ruby_times, swiss_times)
 end
 
+def memory_profile(hash)
+  referenced = {}
+  hash.each_pair do |key, value|
+    [key, value].each do |object|
+      object_bytes = ObjectSpace.memsize_of(object)
+      next if object_bytes.zero?
+
+      referenced[object.object_id] = object_bytes
+    end
+  end
+
+  container_bytes = ObjectSpace.memsize_of(hash)
+  referenced_bytes = referenced.values.sum
+  {
+    container_bytes: container_bytes,
+    referenced_bytes: referenced_bytes,
+    referenced_objects: referenced.length,
+    total_bytes: container_bytes + referenced_bytes,
+    load_factor: hash.is_a?(SwissHash::Hash) ? hash.stats[:load_factor] : nil,
+    simd: hash.is_a?(SwissHash::Hash) ? hash.stats[:simd] : nil
+  }
+end
+
+def memory_sample(label, builder)
+  GC.start(full_mark: true, immediate_sweep: true)
+  hash = builder.call
+  GC.start(full_mark: true, immediate_sweep: true)
+  profile = memory_profile(hash)
+  printf "  %-22s container %7.1f KiB | referenced keys/values %7.1f KiB (%d objects) | total %7.1f KiB\n",
+         label, profile[:container_bytes] / 1024.0, profile[:referenced_bytes] / 1024.0,
+         profile[:referenced_objects], profile[:total_bytes] / 1024.0
+  profile
+end
+
 puts "SwissHash Benchmark — honest edition"
 puts "Ruby #{RUBY_VERSION} / #{RUBY_PLATFORM}"
 puts "#{RUNS} runs × #{ITERATIONS} iterations (IQR-filtered mean per run), #{WARMUP} warmup/run, interleaved Ruby/Swiss"
@@ -269,24 +304,24 @@ SIZES.each do |n|
   puts ""
 end
 
-puts "Memory (N = 100,000)"
+puts "Memory (N = 100,000; retained object sizes via ObjectSpace)"
 puts "-" * 100
-GC.start
-before = GC.stat[:heap_live_slots]
-swiss = SwissHash::Hash.new
-100_000.times { |i| swiss[i] = i }
-swiss_slots = GC.stat[:heap_live_slots] - before
-stats = swiss.stats
+puts "  Container = hash object/table storage; referenced = directly retained keys and values."
+puts "  Excludes allocator fragmentation and objects reachable only through nested values."
+puts "  Integer keys and values:"
+int_swiss = memory_sample("SwissHash", -> { h = SwissHash::Hash.new; 100_000.times { |i| h[i] = i }; h })
+int_ruby = memory_sample("Ruby Hash", -> { h = {}; 100_000.times { |i| h[i] = i }; h })
+puts "  Total difference: #{((int_swiss[:total_bytes] - int_ruby[:total_bytes]) / 1024.0).round(1)} KiB " \
+     "(#{fmt_pct(int_swiss[:total_bytes], int_ruby[:total_bytes])})"
 
-GC.start
-before = GC.stat[:heap_live_slots]
-ruby = {}
-100_000.times { |i| ruby[i] = i }
-ruby_slots = GC.stat[:heap_live_slots] - before
-
-puts "  SwissHash:  #{stats[:memory_bytes] / 1024} KB native + #{swiss_slots} GC slots"
-puts "  Ruby Hash:  #{ruby_slots} GC slots (native memory not directly measurable)"
-puts "  Load factor: #{(stats[:load_factor] * 100).round(1)}%, SIMD: #{stats[:simd]}"
+string_keys = make_string_keys(100_000)
+puts "  Prebuilt string keys and integer values:"
+puts "  The shared input key array and source strings are excluded from both totals."
+str_swiss = memory_sample("SwissHash", -> { h = SwissHash::Hash.new; string_keys.each_with_index { |key, i| h[key] = i }; h })
+str_ruby = memory_sample("Ruby Hash", -> { h = {}; string_keys.each_with_index { |key, i| h[key] = i }; h })
+puts "  Total difference: #{((str_swiss[:total_bytes] - str_ruby[:total_bytes]) / 1024.0).round(1)} KiB " \
+     "(#{fmt_pct(str_swiss[:total_bytes], str_ruby[:total_bytes])})"
+puts "  SwissHash load factor: #{(int_swiss[:load_factor] * 100).round(1)}%, SIMD: #{int_swiss[:simd]}"
 puts ""
 
 puts "Done."

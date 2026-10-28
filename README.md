@@ -27,64 +27,63 @@ h.stats            # => { capacity: 16, size: 0, ... }
 
 Benchmarks below were produced by `benchmark.rb` on Ruby 3.4.3 / arm64-darwin24.
 
-Methodology: 6 runs × 17 measured iterations, 4 warmup iterations per run, IQR-filtered mean per run, interleaved Ruby/SwissHash measurements with alternating start order, and per-side coefficient of variation (`±X.X%`) reported to make noise visible.
+Methodology: 10 runs × 21 measured iterations, 5 warmup iterations per run, IQR-filtered mean per run, interleaved Ruby/SwissHash measurements with alternating start order, and per-side coefficient of variation (`±X.X%`) reported to make noise visible.
 
 ### N = 100,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 7.004 ms (±2.4%) | 5.245 ms (±1.2%) | **−25.12%** ⚡ |
-| Insert (string keys) | 17.751 ms (±1.0%) | 11.207 ms (±1.1%) | **−36.86%** ⚡ |
-| Insert (random int) | 6.148 ms (±1.8%) | 4.845 ms (±0.2%) | **−21.20%** ⚡ |
-| Lookup (sequential int, 3x) | 12.286 ms (±1.1%) | 11.614 ms (±1.1%) | **−5.47%** ⚡ |
-| Lookup (string keys, 3x) | 22.558 ms (±0.6%) | 22.650 ms (±0.9%) | +0.41% |
-| Delete + reinsert 25% | 9.517 ms (±0.8%) | 7.392 ms (±1.8%) | **−22.33%** ⚡ |
-| Mixed (70% read / 20% write / 10% delete) | 25.333 ms (±2.0%) | 21.860 ms (±3.4%) | **−13.71%** ⚡ |
+| Insert (sequential int) | 6.412 ms (±0.5%) | 4.973 ms (±0.7%) | **−22.44%** ⚡ |
+| Insert (string keys) | 16.130 ms (±0.2%) | 10.470 ms (±0.2%) | **−35.09%** ⚡ |
+| Insert (random int) | 5.994 ms (±0.6%) | 4.763 ms (±0.8%) | **−20.55%** ⚡ |
+| Lookup (sequential int, 3x) | 12.204 ms (±0.1%) | 11.050 ms (±0.1%) | **−9.46%** ⚡ |
+| Lookup (string keys, 3x) | 20.465 ms (±0.2%) | 20.322 ms (±0.2%) | **−0.70%** ⚡ |
+| Delete + reinsert 25% | 8.968 ms (±0.3%) | 7.075 ms (±0.4%) | **−21.10%** ⚡ |
+| Mixed (70/20/10 R/W/D) | 22.168 ms (±0.3%) | 18.818 ms (±0.1%) | **−15.11%** ⚡ |
 
 ### N = 10,000
 
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 0.606 ms (±2.8%) | 0.518 ms (±1.3%) | **−14.57%** ⚡ |
-| Insert (string keys) | 1.638 ms (±1.9%) | 1.057 ms (±1.2%) | **−35.49%** ⚡ |
-| Insert (random int) | 0.583 ms (±1.5%) | 0.507 ms (±1.2%) | **−13.07%** ⚡ |
-| Lookup (sequential int, 3x) | 1.108 ms (±1.3%) | 1.063 ms (±1.4%) | **−4.02%** ⚡ |
-| Lookup (string keys, 3x) | 1.748 ms (±1.5%) | 1.623 ms (±1.3%) | **−7.12%** ⚡ |
-| Delete + reinsert 25% | 0.859 ms (±2.2%) | 0.740 ms (±2.2%) | **−13.85%** ⚡ |
-| Mixed (70% read / 20% write / 10% delete) | 2.123 ms (±1.1%) | 1.928 ms (±1.2%) | **−9.21%** ⚡ |
+| Insert (sequential int) | 0.577 ms (±1.2%) | 0.499 ms (±1.5%) | **−13.58%** ⚡ |
+| Insert (string keys) | 1.479 ms (±1.6%) | 1.001 ms (±1.3%) | **−32.30%** ⚡ |
+| Insert (random int) | 0.541 ms (±1.9%) | 0.470 ms (±2.2%) | **−13.10%** ⚡ |
+| Lookup (sequential int, 3x) | 1.069 ms (±0.2%) | 1.035 ms (±0.2%) | **−3.22%** ⚡ |
+| Lookup (string keys, 3x) | 1.692 ms (±0.4%) | 1.550 ms (±0.4%) | **−8.42%** ⚡ |
+| Delete + reinsert 25% | 0.808 ms (±0.9%) | 0.701 ms (±0.7%) | **−13.33%** ⚡ |
+| Mixed (70/20/10 R/W/D) | 1.979 ms (±0.6%) | 1.829 ms (±0.8%) | **−7.62%** ⚡ |
 
 ### N = 1,000
 
-Ruby Hash uses an AR-table for small hashes, so very small integer-keyed workloads can still be close. String-heavy workloads remain the strongest SwissHash case.
-
 | Operation | Ruby Hash | SwissHash | Delta |
 |---|---:|---:|---:|
-| Insert (sequential int) | 0.059 ms (±3.2%) | 0.057 ms (±4.6%) | **−4.32%** ⚡ |
-| Insert (string keys) | 0.167 ms (±3.3%) | 0.108 ms (±1.8%) | **−35.17%** ⚡ |
-| Insert (random int) | 0.055 ms (±2.1%) | 0.052 ms (±2.2%) | **−6.03%** ⚡ |
-| Lookup (sequential int, 3x) | 0.114 ms (±1.8%) | 0.111 ms (±2.3%) | **−2.15%** ⚡ |
-| Lookup (string keys, 3x) | 0.184 ms (±1.3%) | 0.155 ms (±0.9%) | **−15.68%** ⚡ |
-| Delete + reinsert 25% | 0.086 ms (±2.2%) | 0.080 ms (±2.5%) | **−6.91%** ⚡ |
-| Mixed (70% read / 20% write / 10% delete) | 0.211 ms (±1.4%) | 0.202 ms (±2.0%) | **−4.66%** ⚡ |
+| Insert (sequential int) | 0.057 ms (±0.8%) | 0.053 ms (±1.3%) | **−6.53%** ⚡ |
+| Insert (string keys) | 0.154 ms (±2.7%) | 0.103 ms (±0.9%) | **−32.69%** ⚡ |
+| Insert (random int) | 0.054 ms (±1.4%) | 0.049 ms (±1.1%) | **−9.27%** ⚡ |
+| Lookup (sequential int, 3x) | 0.110 ms (±0.5%) | 0.106 ms (±0.4%) | **−3.73%** ⚡ |
+| Lookup (string keys, 3x) | 0.177 ms (±0.5%) | 0.151 ms (±0.4%) | **−14.37%** ⚡ |
+| Delete + reinsert 25% | 0.081 ms (±0.8%) | 0.074 ms (±1.1%) | **−8.42%** ⚡ |
+| Mixed (70/20/10 R/W/D) | 0.203 ms (±0.2%) | 0.191 ms (±0.3%) | **−5.88%** ⚡ |
 
 ### Summary
 
-- SwissHash is faster on **6 of 7 operations** at N=100k; string lookup at that size is within 1% of Ruby Hash.
-- The strongest win is still string-key insertion: **−35% to −37%** across tested sizes.
-- Sequential integer insert at N=1k now beats Ruby Hash (it lost slightly in 0.1.2).
+- SwissHash is faster on all seven listed operations at N=100k; string lookup is within 1% of Ruby Hash.
+- The strongest win is string-key insertion: **−32% to −35%** across tested sizes.
 - ARM64 uses the NEON group-matching path (`stats[:simd] => "NEON"`).
 - Ruby's built-in `Hash` remains excellent, especially for very small maps and cases that benefit from VM-level Hash specialization.
 
 ### Memory Usage
 
-For 100,000 integer keys in the current benchmark:
+For 100,000 entries, `ObjectSpace.memsize_of` reports the hash object/table and directly retained key/value objects. Integer keys and values are immediate values, so they add no separate object bytes. For string-key tests, stored string keys are counted; the shared input array and source strings are excluded from both totals.
 
-| Implementation | Reported memory |
-|---|---:|
-| SwissHash | 2,176 KB native + 4 GC slots |
-| Ruby Hash | 3 GC slots; native memory not directly measurable from this benchmark |
+| Workload | Implementation | Container | Referenced keys/values | Total |
+|---|---|---:|---:|---:|
+| Integer keys and values | SwissHash | 2,176.1 KiB | 0.0 KiB | 2,176.1 KiB |
+| Integer keys and values | Ruby Hash | 4,096.2 KiB | 0.0 KiB | 4,096.2 KiB |
+| String keys and integer values | SwissHash | 2,176.1 KiB | 6,408.1 KiB | 8,584.2 KiB |
+| String keys and integer values | Ruby Hash | 4,096.2 KiB | 6,408.1 KiB | 10,504.3 KiB |
 
-Additional stats: load factor 76.3%, max load factor 87.5%, SIMD path reported as NEON on the benchmarked Apple Silicon machine.
+SwissHash uses 46.87% less measured memory for integer entries and 18.28% less for string-key entries. The measurement excludes allocator fragmentation and objects reachable only through nested values. Load factor: 76.3%; max load factor: 87.5%; SIMD path: NEON.
 
 ## Features
 

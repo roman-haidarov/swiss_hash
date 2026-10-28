@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 - 2026-10-28
+
+- Prevented reentrant Fixnum insertion and `clear`/`initialize` from modifying a table during hash callbacks.
+- Made reinitialization preserve the existing table if capacity validation or allocation fails; rejected overflowing capacities.
+- Made `replace` with itself a no-op and kept contents intact when the replacement cannot convert to a Hash.
+- Updated benchmark memory reporting to compare container storage and directly retained keys/values for Ruby Hash and SwissHash.
+- Refreshed README timings and memory results for Ruby 3.4.3 / arm64-darwin24.
+
 ## 0.1.3 - 2026-08-18
 
 - NEON group matching on ARM64 (SSE2 on x86_64, SWAR elsewhere)
